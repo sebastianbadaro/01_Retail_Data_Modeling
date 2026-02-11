@@ -1,5 +1,5 @@
 -- =====================================================================================
--- 01_init_dw.sql  (V2 - didáctico)
+-- 01_init_dw.sql  
 --
 -- OBJETIVO
 --   Crear el "Data Warehouse" (DW) vacío y autocontenido para el proyecto.
