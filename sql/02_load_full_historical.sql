@@ -1,25 +1,29 @@
 -- =====================================================================================
--- 02_load_full_historical.sql
--- Objetivo:
---   Cargar TODO el histórico desde OLTP hacia el modelo dimensional (full load).
---   Incluye:
---     - dim_date (con unknown)
---     - dim_customer (SCD2 inicial)
---     - dim_product  (SCD2 inicial, denormalizada)
---     - dim_employee (SCD1 inicial)
---     - dim_shipper  (SCD1 inicial)
---     - fact_sales_line (todas las líneas de pedidos)
---   Además:
---     - Inicializa watermarks y secuencias de SK.
+-- 02_load_full_historical.sql (V2 - didáctico)
 --
--- Notas didácticas:
---   - effective_from inicial se setea a '1900-01-01' para que TODAS las ventas históricas
---     encuentren una versión válida de la dimensión (as-of join por fecha del evento).
+-- OBJETIVO
+--   Cargar TODO el histórico desde OLTP -> DW (full load).
+--   Este script se usa para:
+--     - construir el DW desde cero
+--     - entender el "primer poblamiento" de un modelo dimensional
+--
+-- ORDEN DE CARGA (por qué importa)
+--   1) dim_date (porque después la fact la referencia)
+--   2) dimensiones (customer/product/employee/shipper)
+--   3) fact (porque necesita las SK ya resueltas)
+--   4) watermarks / secuencias / logs
+--
+-- NOTA SCD2 (muy importante):
+--   En el full inicial, ponemos effective_from = '1900-01-01' para todas las filas,
+--   y effective_to = '9999-12-31'.
+--   Esto garantiza que CUALQUIER venta histórica encuentre una versión válida de la dimensión.
 -- =====================================================================================
 
 ATTACH 'data/oltp/northwind_oltp.duckdb' AS oltp;
 
--- Limpieza para rehacer el DW desde cero (idempotencia del aprendizaje)
+BEGIN TRANSACTION;
+
+-- 0) Limpieza idempotente (para poder re-ejecutar el full sin borrar el archivo)
 DELETE FROM dw.fact_sales_line;
 DELETE FROM dw.dim_shipper;
 DELETE FROM dw.dim_employee;
@@ -31,15 +35,16 @@ DELETE FROM ctl.watermark;
 DELETE FROM ctl.surrogate_key_seq;
 
 -- -------------------------------------------------------------------------------------
--- 1) Dimensión Fecha (dim_date)
+-- 1) DIM_DATE
 -- -------------------------------------------------------------------------------------
 
--- 1.1) Insertar unknown member (date_sk = 0)
+-- 1.1) Unknown date (date_sk=0)
 INSERT INTO dw.dim_date
 VALUES (0, DATE '1900-01-01', NULL, NULL, NULL, 'Unknown', 'Unknown', NULL, NULL, NULL);
 
--- 1.2) Generar rango de fechas basado en Orders
---     (plus 365 días para cubrir futuras inserciones didácticas)
+-- 1.2) Rango de fechas (desde min(OrderDate) hasta max(OrderDate)+365)
+--      ¿Por qué +365?
+--      Para que las simulaciones incrementales no fallen por "fecha fuera del calendario".
 WITH bounds AS (
   SELECT
     CAST(MIN(OrderDate) AS DATE) AS min_date,
@@ -47,8 +52,7 @@ WITH bounds AS (
   FROM oltp.Orders
 ),
 dates AS (
-  SELECT
-    generate_series(min_date, max_date + INTERVAL 365 DAY, INTERVAL 1 DAY) AS d
+  SELECT generate_series(min_date, max_date + INTERVAL 365 DAY, INTERVAL 1 DAY) AS d
   FROM bounds
 )
 INSERT INTO dw.dim_date
@@ -65,14 +69,13 @@ SELECT
   strftime(d, '%W')::INTEGER AS week_of_year,
   ((EXTRACT(MONTH FROM d)::INTEGER - 1) / 3 + 1) AS quarter,
   (strftime(d, '%w') IN ('0','6')) AS is_weekend
-FROM dates
-WHERE d IS NOT NULL;
+FROM dates;
 
 -- -------------------------------------------------------------------------------------
--- 2) Dimensión Customer (SCD2) - carga inicial
+-- 2) DIM_CUSTOMER (SCD2 inicial)
 -- -------------------------------------------------------------------------------------
 
--- 2.1) Unknown member (customer_sk = 0)
+-- 2.1) Unknown member (customer_sk=0)
 INSERT INTO dw.dim_customer (
   customer_sk, customer_id, company_name, contact_name, contact_title, address, city, region,
   postal_code, country, phone, fax,
@@ -83,7 +86,9 @@ VALUES (
   DATE '1900-01-01', DATE '9999-12-31', TRUE, NULL
 );
 
--- 2.2) Staging con hashdiff (detección de cambios)
+-- 2.2) Staging: traemos customers del OLTP y calculamos un hash de atributos
+--      ¿Por qué hash?
+--      Para detectar cambios comparando "antes vs ahora" sin comparar columna por columna.
 CREATE OR REPLACE TABLE stg.customer_src AS
 SELECT
   CustomerID AS customer_id,
@@ -112,10 +117,10 @@ SELECT
   ) AS record_hash
 FROM oltp.Customers;
 
--- 2.3) Insert inicial (surrogate keys asignadas por row_number + 1)
+-- 2.3) Insert inicial: asignamos SK con row_number() (arranca en 1)
 INSERT INTO dw.dim_customer
 SELECT
-  row_number() OVER (ORDER BY customer_id) AS customer_sk,   -- arranca en 1
+  row_number() OVER (ORDER BY customer_id) AS customer_sk,
   customer_id, company_name, contact_name, contact_title, address, city, region,
   postal_code, country, phone, fax,
   DATE '1900-01-01' AS effective_from,
@@ -124,15 +129,15 @@ SELECT
   record_hash
 FROM stg.customer_src;
 
--- 2.4) Inicializar secuencia para customer
+-- 2.4) Inicializar secuencia (próxima SK disponible)
 INSERT INTO ctl.surrogate_key_seq(dim_name, next_sk)
 SELECT 'customer', (SELECT max(customer_sk) + 1 FROM dw.dim_customer);
 
 -- -------------------------------------------------------------------------------------
--- 3) Dimensión Product (SCD2, denormalizada) - carga inicial
+-- 3) DIM_PRODUCT (SCD2 inicial, denormalizada)
 -- -------------------------------------------------------------------------------------
 
--- 3.1) Unknown member (product_sk = 0)
+-- 3.1) Unknown member
 INSERT INTO dw.dim_product (
   product_sk, product_id, product_name, quantity_per_unit, list_unit_price,
   units_in_stock, units_on_order, reorder_level, discontinued,
@@ -145,7 +150,7 @@ VALUES (
   DATE '1900-01-01', DATE '9999-12-31', TRUE, NULL
 );
 
--- 3.2) Staging (join a Categories y Suppliers para denormalizar)
+-- 3.2) Staging: join a Categories y Suppliers (denormalización BI-friendly)
 CREATE OR REPLACE TABLE stg.product_src AS
 SELECT
   p.ProductID AS product_id,
@@ -183,7 +188,6 @@ FROM oltp.Products p
 LEFT JOIN oltp.Categories c ON c.CategoryID = p.CategoryID
 LEFT JOIN oltp.Suppliers  s ON s.SupplierID = p.SupplierID;
 
--- 3.3) Insert inicial con surrogate keys por row_number (arranca en 1)
 INSERT INTO dw.dim_product
 SELECT
   row_number() OVER (ORDER BY product_id) AS product_sk,
@@ -196,15 +200,13 @@ SELECT
   record_hash
 FROM stg.product_src;
 
--- 3.4) Inicializar secuencia para product
 INSERT INTO ctl.surrogate_key_seq(dim_name, next_sk)
 SELECT 'product', (SELECT max(product_sk) + 1 FROM dw.dim_product);
 
 -- -------------------------------------------------------------------------------------
--- 4) Dimensión Employee (SCD1) - carga inicial
+-- 4) DIM_EMPLOYEE (SCD1)
 -- -------------------------------------------------------------------------------------
 
--- Unknown member
 INSERT INTO dw.dim_employee
 VALUES (0, -1, 'Unknown', 'Unknown', NULL, NULL, NULL, NULL, NULL, NULL);
 
@@ -242,7 +244,7 @@ INSERT INTO ctl.surrogate_key_seq(dim_name, next_sk)
 SELECT 'employee', (SELECT max(employee_sk) + 1 FROM dw.dim_employee);
 
 -- -------------------------------------------------------------------------------------
--- 5) Dimensión Shipper (SCD1) - carga inicial
+-- 5) DIM_SHIPPER (SCD1)
 -- -------------------------------------------------------------------------------------
 
 INSERT INTO dw.dim_shipper VALUES (0, -1, 'Unknown', NULL, NULL);
@@ -269,10 +271,10 @@ INSERT INTO ctl.surrogate_key_seq(dim_name, next_sk)
 SELECT 'shipper', (SELECT max(shipper_sk) + 1 FROM dw.dim_shipper);
 
 -- -------------------------------------------------------------------------------------
--- 6) Fact sales line - carga histórica
+-- 6) FACT_SALES_LINE (histórico)
 -- -------------------------------------------------------------------------------------
 
--- Staging de líneas (join Orders + Order Details)
+-- 6.1) Staging: construir el set “atómico” de ventas (header + lines)
 CREATE OR REPLACE TABLE stg.sales_line_src AS
 SELECT
   o.OrderID AS order_id,
@@ -284,15 +286,16 @@ SELECT
   CAST(o.RequiredDate AS DATE) AS required_date,
   CAST(o.ShippedDate AS DATE) AS shipped_date,
   CAST(o.Freight AS DOUBLE) AS freight,
-
   CAST(od.Quantity AS BIGINT) AS quantity,
   CAST(od.UnitPrice AS DOUBLE) AS unit_price,
   CAST(od.Discount AS DOUBLE) AS discount
 FROM oltp.Orders o
-JOIN oltp."Order Details" od
-  ON od.OrderID = o.OrderID;
+JOIN oltp."Order Details" od ON od.OrderID = o.OrderID;
 
--- Insert a fact con asignación de SKs (as-of join en dims SCD2 por fecha del evento)
+-- 6.2) Insert a la fact resolviendo SKs.
+--      OJO DIDÁCTICO:
+--      - Para SCD2 NO debemos filtrar is_current, sino usar el rango effective_from/to.
+--      - Eso asegura que si mañana una dimensión cambia, las ventas históricas siguen “apuntando” a la versión correcta.
 INSERT INTO dw.fact_sales_line
 SELECT
   s.order_id,
@@ -317,22 +320,22 @@ SELECT
 
   s.freight AS order_freight,
 
-  -- Freight asignado proporcional a net_amount
+  -- Ejemplo didáctico: asignar el freight del header proporcional al net_amount
   CASE
     WHEN sum(s.quantity * s.unit_price * (1 - s.discount)) OVER (PARTITION BY s.order_id) = 0 THEN 0
-    ELSE s.freight * ( (s.quantity * s.unit_price * (1 - s.discount))
-      / sum(s.quantity * s.unit_price * (1 - s.discount)) OVER (PARTITION BY s.order_id) )
+    ELSE s.freight * (
+      (s.quantity * s.unit_price * (1 - s.discount))
+      / sum(s.quantity * s.unit_price * (1 - s.discount)) OVER (PARTITION BY s.order_id)
+    )
   END AS freight_allocated,
 
   current_timestamp AS etl_loaded_at
 FROM stg.sales_line_src s
 LEFT JOIN dw.dim_customer dc
   ON dc.customer_id = s.customer_id
- AND dc.is_current = TRUE
  AND s.order_date BETWEEN dc.effective_from AND dc.effective_to
 LEFT JOIN dw.dim_product dp
   ON dp.product_id = s.product_id
- AND dp.is_current = TRUE
  AND s.order_date BETWEEN dp.effective_from AND dp.effective_to
 LEFT JOIN dw.dim_employee de
   ON de.employee_id = s.employee_id
@@ -343,17 +346,16 @@ LEFT JOIN dw.dim_date ddo
 LEFT JOIN dw.dim_date ddr
   ON ddr.date = s.required_date
 LEFT JOIN dw.dim_date dds
-  ON dds.date = coalesce(s.shipped_date, DATE '1900-01-01'); -- shipped null -> unknown date row exists
+  ON dds.date = coalesce(s.shipped_date, DATE '1900-01-01');
 
 -- -------------------------------------------------------------------------------------
--- 7) Watermark inicial (máximo OrderID cargado)
+-- 7) WATERMARK inicial
 -- -------------------------------------------------------------------------------------
-
 INSERT INTO ctl.watermark(entity, last_order_id, updated_at)
 SELECT 'orders', (SELECT max(order_id) FROM dw.fact_sales_line), current_timestamp;
 
 -- -------------------------------------------------------------------------------------
--- 8) Log
+-- 8) LOG
 -- -------------------------------------------------------------------------------------
 INSERT INTO ctl.etl_run_log
 SELECT
@@ -365,3 +367,5 @@ SELECT
   (SELECT count(*) FROM dw.dim_product  WHERE product_sk  <> 0) AS rows_dim_product,
   (SELECT count(*) FROM dw.fact_sales_line) AS rows_fact_sales,
   'Full historical load completed' AS notes;
+
+COMMIT;
