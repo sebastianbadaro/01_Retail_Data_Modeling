@@ -1,39 +1,39 @@
 -- =====================================================================================
--- 90_simulate_new_data.sql
--- Objetivo:
---   Simular cambios y nuevos datos en el OLTP para demostrar:
---     - SCD2 en dim_customer y dim_product
---     - Nuevas órdenes para cargar incrementalmente (watermark por OrderID)
+-- 90_simulate_new_data.sql (V2 - didáctico)
 --
--- Importante:
---   - Este script MODIFICA la base OLTP (data/oltp/northwind_oltp.duckdb).
---   - Está hecho para ser razonablemente idempotente:
---       * inserta customer 'SBADR' si no existe
---       * inserta product 78 si no existe
---       * inserta order 11078 si no existe
+-- OBJETIVO
+--   Modificar el OLTP para crear escenarios de aprendizaje:
+--     1) Cambio en Customer existente (SCD2: nueva versión)
+--     2) Customer nuevo (SCD2: nuevo miembro)
+--     3) Cambio en Product existente (SCD2: nueva versión)
+--     4) Product nuevo (SCD2: nuevo miembro)
+--     5) Nuevas Orders + Order Details (para probar incremental de fact por watermark)
+--
+-- NOTA
+--   Este script se corre contra data/oltp/northwind_oltp.duckdb y lo modifica.
 -- =====================================================================================
 
--- 1) Cambios en un customer existente (dispara SCD2)
+-- 1) Customer existente cambia (dispara SCD2)
 UPDATE Customers
 SET City = 'Munich', Phone = '+49 999 000 111'
 WHERE CustomerID = 'ALFKI';
 
--- 2) Insertar un nuevo customer (dispara new member)
+-- 2) Customer nuevo (dispara inserción nueva en dim_customer)
 INSERT INTO Customers (CustomerID, CompanyName, ContactName, ContactTitle, Address, City, Region, PostalCode, Country, Phone, Fax)
 SELECT 'SBADR', 'Sebas Data Shop', 'Sebastián Badaró', 'Owner', 'Córdoba 123', 'Córdoba', 'Córdoba', '5000', 'Argentina', '+54 351 000 000', NULL
 WHERE NOT EXISTS (SELECT 1 FROM Customers WHERE CustomerID='SBADR');
 
--- 3) Cambios en producto existente (dispara SCD2)
+-- 3) Product existente cambia (dispara SCD2)
 UPDATE Products
 SET UnitPrice = 20.0
 WHERE ProductID = 1;
 
--- 4) Insertar un nuevo producto (ProductID=78) si no existe
+-- 4) Product nuevo (si no existe)
 INSERT INTO Products (ProductID, ProductName, SupplierID, CategoryID, QuantityPerUnit, UnitPrice, UnitsInStock, UnitsOnOrder, ReorderLevel, Discontinued)
 SELECT 78, 'Sebas Special Sauce', 1, 2, '12 bottles', 15.0, 100, 0, 10, 0
 WHERE NOT EXISTS (SELECT 1 FROM Products WHERE ProductID=78);
 
--- 5) Insertar una nueva orden (OrderID=11078) si no existe
+-- 5) Nueva orden (OrderID alto para que sea > watermark)
 INSERT INTO Orders (
   OrderID, CustomerID, EmployeeID, OrderDate, RequiredDate, ShippedDate,
   ShipVia, Freight, ShipName, ShipAddress, ShipCity, ShipRegion, ShipPostalCode, ShipCountry
@@ -47,8 +47,7 @@ SELECT
   'Alfreds Futterkiste', 'Obere Str. 57', 'Munich', NULL, '12209', 'Germany'
 WHERE NOT EXISTS (SELECT 1 FROM Orders WHERE OrderID=11078);
 
--- 6) Insertar líneas de esa orden (Order Details)
---    Nota: PK (OrderID, ProductID) -> elegimos productos 1 y 78.
+-- 6) Líneas de la orden (Order Details)
 INSERT INTO "Order Details" (OrderID, ProductID, UnitPrice, Quantity, Discount)
 SELECT 11078, 1, 20.0, 10, 0.05
 WHERE NOT EXISTS (SELECT 1 FROM "Order Details" WHERE OrderID=11078 AND ProductID=1);
@@ -57,7 +56,7 @@ INSERT INTO "Order Details" (OrderID, ProductID, UnitPrice, Quantity, Discount)
 SELECT 11078, 78, 15.0, 5, 0.00
 WHERE NOT EXISTS (SELECT 1 FROM "Order Details" WHERE OrderID=11078 AND ProductID=78);
 
--- 7) (Opcional) insert otra orden para el nuevo customer (SBADR)
+-- 7) Otra orden para el customer nuevo
 INSERT INTO Orders (
   OrderID, CustomerID, EmployeeID, OrderDate, RequiredDate, ShippedDate,
   ShipVia, Freight, ShipName, ShipAddress, ShipCity, ShipRegion, ShipPostalCode, ShipCountry
@@ -75,7 +74,7 @@ INSERT INTO "Order Details" (OrderID, ProductID, UnitPrice, Quantity, Discount)
 SELECT 11079, 78, 15.0, 3, 0.10
 WHERE NOT EXISTS (SELECT 1 FROM "Order Details" WHERE OrderID=11079 AND ProductID=78);
 
--- Quick sanity outputs (para que veas qué cambió)
+-- 8) Outputs rápidos (para ver que efectivamente cambió algo)
 SELECT 'Customers total' AS metric, count(*) AS value FROM Customers;
 SELECT 'Products total'  AS metric, count(*) AS value FROM Products;
 SELECT 'Orders total'    AS metric, count(*) AS value FROM Orders;
