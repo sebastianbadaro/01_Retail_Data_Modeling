@@ -219,7 +219,13 @@ El enfoque separa:
   - detectar cambios en dimensiones (SCD)
   - insertar nuevos hechos (watermark/CDC/timestamps)
 
+## Resultado final
 
+Al finalizar el proyecto, el esquema OLTP de Northwind queda transformado en un **modelo dimensional (OLAP)** listo para análisis, siguiendo el enfoque de **Kimball** (modelo en estrella con una tabla de hechos central y dimensiones descriptivas).
+
+## Modelo OLAP (Data Warehouse) — Star Schema
+
+![Northwind OLAP Star Schema](docs/assets/northwind_olap_star_schema.svg)
 
 ---
 ## Notas
