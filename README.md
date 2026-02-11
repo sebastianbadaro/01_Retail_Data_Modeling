@@ -135,23 +135,72 @@ duckdb data/dw/northwind_dw.duckdb < sql/03_load_incremental.sql
 
 ---
 
-## Qué enseña este proyecto (Kimball “de verdad”)
+## Teoría de Kimball aplicada en este proyecto
 
-1) **Proceso de negocio**: Ventas / Fulfillment  
-2) **Grano**: 1 fila = **1 línea de pedido** (OrderID + ProductID)  
-3) **Fact**: `dw.fact_sales_line` con medidas aditivas  
-4) **Dimensiones**:
-   - `dw.dim_date` (role‑playing en fact: order/required/shipped)
-   - `dw.dim_customer` (**SCD2**) – ejemplo de historización real
-   - `dw.dim_product` (**SCD2**) – denormalizada (Category + Supplier dentro)
-   - `dw.dim_employee` (SCD1)
-   - `dw.dim_shipper` (SCD1)
-5) **Unknown members**:
-   - `date_sk = 0` para fechas faltantes (ej. ShippedDate NULL)
-   - `*_sk = 0` para dimensiones faltantes (mejores joins y BI sin NULLs)
-6) **Carga incremental**:
-   - Watermark por `OrderID` (nuevo fact)
-   - Detección de cambios por `record_hash` (para SCD2)
+Este proyecto sigue los principios del **modelado dimensional de Ralph Kimball** para transformar un esquema **OLTP** (transaccional, normalizado) en un esquema **OLAP** (analítico) basado en un **Star Schema** (modelo en estrella). El objetivo es que las consultas sean simples, rápidas y entendibles para análisis.
+
+### 1) Proceso de negocio (Business Process)
+El primer paso es elegir **qué proceso del negocio** queremos analizar.  
+En este caso: **ventas/fulfillment**, usando `Orders` + `Order Details`.  
+Esto define qué métricas y qué dimensiones forman parte del modelo.
+
+### 2) Grano (Grain) de la tabla de hechos
+La decisión más importante es definir el **grano**:
+> ¿Qué representa exactamente una fila en la tabla de hechos?
+
+En este proyecto, el grano es **1 fila por línea de pedido (order line)**.  
+Esto evita doble conteo y permite analizar al nivel más atómico disponible.
+
+### 3) Tabla de hechos (Fact Table)
+La tabla de hechos contiene:
+- **Claves foráneas a dimensiones** (surrogate keys)
+- **Medidas numéricas** (métricas aditivas): cantidad, precio, descuento, importe bruto/neto, etc.
+- **Dimensión degenerada** cuando corresponde (por ejemplo `order_id` para trazabilidad)
+
+### 4) Dimensiones “anchas” y denormalizadas (conformed, BI-friendly)
+Las dimensiones aportan el contexto descriptivo (quién, qué, cuándo, dónde).  
+En Kimball se prefieren dimensiones:
+- **Entendibles por negocio**
+- **Denormalizadas** (evitar snowflake) para reducir joins y simplificar BI
+
+Ejemplo: `dim_product` incluye atributos de `Products` + `Categories` + `Suppliers` (denormalizado).
+
+### 5) Surrogate Keys (claves subrogadas)
+Las dimensiones usan **surrogate keys (SK)** generadas por el DW (no las keys del OLTP) porque:
+- desacoplan el DW de cambios del OLTP
+- permiten historización (SCD)
+- mejoran consistencia y performance de joins
+
+### 6) Slowly Changing Dimensions (SCD)
+Para manejar cambios en atributos dimensionales se aplican patrones SCD:
+
+- **SCD Tipo 1 (overwrite):** se pisa el valor anterior (sin historia).  
+  Útil cuando no interesa auditar cambios.
+- **SCD Tipo 2 (histórico):** se crea una nueva fila con nueva SK para preservar historia.  
+  Implementado con `effective_from`, `effective_to`, `is_current`.
+
+En este proyecto:
+- `dim_customer` y `dim_product` son **SCD2**
+- `dim_employee` y `dim_shipper` se manejan como **SCD1**
+
+### 7) Role-Playing Dates (dimensión fecha reutilizable)
+Se usa una única `dim_date` y múltiples FKs desde el hecho:
+- `order_date_sk`
+- `required_date_sk`
+- `shipped_date_sk`
+
+### 8) Unknown Members (SK = 0)
+Cada dimensión incluye un registro “Unknown” (`SK = 0`) para:
+- evitar `NULL` en claves
+- no romper joins
+- permitir auditar calidad de datos (facts sin match)
+
+### 9) Cargas full e incrementales
+El enfoque separa:
+- **Full/Historical load:** poblar el DW desde cero.
+- **Incremental load:** aplicar cambios nuevos:
+  - detectar cambios en dimensiones (SCD)
+  - insertar nuevos hechos (watermark/CDC/timestamps)
 
 ---
 
