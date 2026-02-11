@@ -12,6 +12,88 @@ Incluye:
 
 ---
 
+
+### ¿Qué representa el modelo? (Historia del negocio)
+- **Customers** compran productos a Northwind.
+- **Orders** son los pedidos (cabecera): quién compra, qué empleado lo gestiona, fechas y datos de envío.
+- **Order Details** son las líneas del pedido (detalle): producto, cantidad, precio y descuento.
+- **Products** es el catálogo/inventario; cada producto pertenece a una **Category** y lo provee un **Supplier**.
+- **Shippers** son las compañías de transporte (cómo se envía el pedido).
+- **Employees** son vendedores/operadores que gestionan pedidos; pueden estar asociados a territorios/regiones.
+
+---
+
+### Tablas principales (Data Dictionary “rápido”)
+
+#### Transaccionales (hechos operacionales)
+- **Orders**
+  - **PK:** `OrderID`
+  - **FKs:** `CustomerID` → Customers, `EmployeeID` → Employees, `ShipVia` → Shippers
+  - **Campos clave:** `OrderDate`, `RequiredDate`, `ShippedDate`, `Freight`
+  - **Interpretación:** cabecera del pedido (1 por pedido). Incluye datos de envío (ShipAddress/City/Country, etc.).
+
+- **Order Details**
+  - **PK compuesta:** (`OrderID`, `ProductID`)
+  - **FKs:** `OrderID` → Orders, `ProductID` → Products
+  - **Campos clave:** `UnitPrice`, `Quantity`, `Discount`
+  - **Interpretación:** líneas del pedido (1..N por pedido). Es la tabla más “atómica” para análisis de ventas.
+
+#### Maestras (catálogos / dimensiones en OLTP)
+- **Customers**
+  - **PK:** `CustomerID`
+  - **Campos típicos:** `CompanyName`, `ContactName`, `City`, `Country`, etc.
+  - **Interpretación:** información del cliente.
+
+- **Products**
+  - **PK:** `ProductID`
+  - **FKs:** `SupplierID` → Suppliers, `CategoryID` → Categories
+  - **Campos típicos:** `ProductName`, `QuantityPerUnit`, `UnitPrice`, `UnitsInStock`, `Discontinued`
+  - **Interpretación:** catálogo e inventario.
+
+- **Categories**
+  - **PK:** `CategoryID`
+  - **Campos típicos:** `CategoryName`, `Description`
+  - **Interpretación:** clasificación de productos.
+
+- **Suppliers**
+  - **PK:** `SupplierID`
+  - **Campos típicos:** `CompanyName`, `Country`, `Phone`, etc.
+  - **Interpretación:** proveedores/vendedores de productos.
+
+- **Employees**
+  - **PK:** `EmployeeID`
+  - **Campos típicos:** `FirstName`, `LastName`, `Title`, `HireDate`, `Country`
+  - **Extra:** relación jerárquica (un empleado puede “reportar a” otro).
+
+- **Shippers**
+  - **PK:** `ShipperID`
+  - **Campos típicos:** `CompanyName`, `Phone`
+  - **Interpretación:** empresas que realizan envíos.
+
+#### Organización / Geografía (opcional para análisis)
+- **Regions**
+  - **PK:** `RegionID`
+  - **Interpretación:** región de ventas.
+
+- **Territories**
+  - **PK:** `TerritoryID`
+  - **FK:** `RegionID` → Regions
+  - **Interpretación:** territorios dentro de regiones.
+
+- **EmployeeTerritories**
+  - **PK compuesta:** (`EmployeeID`, `TerritoryID`)
+  - **Interpretación:** tabla puente (N..N) entre empleados y territorios.
+
+#### Segmentación de clientes (opcional; en algunos ports puede venir sin filas)
+- **CustomerDemographics**
+  - **PK:** `CustomerTypeID`
+
+- **CustomerCustomerDemo**
+  - **PK compuesta:** (`CustomerID`, `CustomerTypeID`)
+  - **Interpretación:** puente para asignar segmentos a clientes.
+
+
+
 ## Estructura
 
 - `data/oltp/northwind_oltp.duckdb` → Base OLTP (operacional) de Northwind
