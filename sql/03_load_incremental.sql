@@ -1,32 +1,45 @@
 -- =====================================================================================
--- 03_load_incremental.sql
--- Objetivo:
---   Ejecutar una carga INCREMENTAL "Kimball style":
---     1) Actualizar dimensiones (SCD2 para Customer/Product, SCD1 para Employee/Shipper)
---     2) Insertar nuevas líneas de pedidos a la fact usando watermark por OrderID
+-- 03_load_incremental.sql (V2 - didáctico)
 --
--- IMPORTANTÍSIMO (didáctico):
---   - Para SCD2 necesitamos una "effective_date" (fecha desde la cual aplica el cambio).
---   - En sistemas reales viene de la fuente (CDC/timestamps). En Northwind no existe, así que
---     lo simulamos con un parámetro controlado.
+-- OBJETIVO
+--   Ejecutar una carga incremental estilo Kimball:
+--     A) Dimensiones:
+--        - Customer (SCD2): cerrar versión actual y crear nueva versión con nueva SK
+--        - Product  (SCD2): idem
+--        - Employee (SCD1): overwrite
+--        - Shipper  (SCD1): overwrite
+--     B) Hechos:
+--        - Insertar nuevas líneas de orders > watermark
 --
--- Cambiá la fecha de abajo si querés repetir simulaciones.
+-- PUNTO DIDÁCTICO CLAVE
+--   SCD2 necesita una "effective_date" (fecha desde la que el cambio es válido).
+--   En un sistema real esto viene de:
+--     - CDC con timestamps
+--     - audit columns (updated_at)
+--     - streams / logs
+--   Northwind no trae eso => lo simulamos con un parámetro.
+--
+-- IMPORTANTE SOBRE EL JOIN DE FACT A DIMS (SCD2)
+--   Cuando insertamos fact rows, resolvemos dim SK usando:
+--     business_key + (order_date between effective_from/to)
+--   NO filtramos is_current, para soportar backfills/historia.
 -- =====================================================================================
 
 ATTACH 'data/oltp/northwind_oltp.duckdb' AS oltp;
 
+BEGIN TRANSACTION;
+
 -- -------------------------------------------------------------------------
--- 0) Parámetro del run
+-- 0) Parámetros del run
 -- -------------------------------------------------------------------------
 CREATE OR REPLACE TEMP TABLE _params AS
-SELECT DATE '1998-05-07' AS effective_date;  -- <-- editar para otros escenarios
+SELECT DATE '1998-05-07' AS effective_date;  -- <- Cambiá esto para nuevas corridas
 
--- Run id = max(run_id)+1
 CREATE OR REPLACE TEMP TABLE _run AS
 SELECT coalesce(max(run_id),0) + 1 AS run_id FROM ctl.etl_run_log;
 
 -- -------------------------------------------------------------------------
--- 1) STAGING: re-leer fuentes OLTP y recalcular hash (en producción sería CDC)
+-- 1) STAGING: (para el demo re-leemos todo; en prod usarías CDC/timestamps)
 -- -------------------------------------------------------------------------
 
 CREATE OR REPLACE TABLE stg.customer_src AS
@@ -67,14 +80,11 @@ SELECT
   p.UnitsOnOrder AS units_on_order,
   p.ReorderLevel AS reorder_level,
   (p.Discontinued = 1) AS discontinued,
-
   c.CategoryID AS category_id,
   c.CategoryName AS category_name,
-
   s.SupplierID AS supplier_id,
   s.CompanyName AS supplier_name,
   s.Country AS supplier_country,
-
   md5(
     coalesce(cast(p.ProductID as VARCHAR),'') || '|' ||
     coalesce(p.ProductName,'') || '|' ||
@@ -94,7 +104,6 @@ FROM oltp.Products p
 LEFT JOIN oltp.Categories c ON c.CategoryID = p.CategoryID
 LEFT JOIN oltp.Suppliers  s ON s.SupplierID = p.SupplierID;
 
--- Employee / Shipper (SCD1)
 CREATE OR REPLACE TABLE stg.employee_src AS
 SELECT
   EmployeeID AS employee_id,
@@ -132,10 +141,13 @@ SELECT
 FROM oltp.Shippers;
 
 -- -------------------------------------------------------------------------
--- 2) DIM CUSTOMER (SCD2)
+-- 2) DIM_CUSTOMER (SCD2)
 -- -------------------------------------------------------------------------
+-- Estrategia:
+--   a) Detectar "delta": nuevos o cambiados vs versión current
+--   b) Cerrar la versión actual (effective_to = effective_date - 1)
+--   c) Insertar nueva versión con NUEVA SK y effective_from = effective_date
 
--- 2.1) Detectar nuevos o cambiados comparando contra el registro current
 CREATE OR REPLACE TEMP TABLE _customer_delta AS
 SELECT s.*
 FROM stg.customer_src s
@@ -145,10 +157,10 @@ LEFT JOIN dw.dim_customer d
 WHERE d.customer_id IS NULL
    OR d.record_hash <> s.record_hash;
 
--- 2.2) Cerrar versiones actuales que cambiaron (solo donde existe current)
+-- Cerrar versiones actuales que realmente cambiaron
 UPDATE dw.dim_customer d
 SET
-  effective_to = (SELECT effective_date FROM _params) - INTERVAL 1 DAY,
+  effective_to = (SELECT effective_date FROM _params) - 1,
   is_current = FALSE
 WHERE d.is_current = TRUE
   AND EXISTS (
@@ -158,13 +170,9 @@ WHERE d.is_current = TRUE
       AND x.record_hash <> d.record_hash
   );
 
--- 2.3) Insertar nuevas versiones + nuevos customers
---     Asignación de surrogate keys usando ctl.surrogate_key_seq (Kimball)
+-- Insertar nuevas versiones (y nuevos customers)
 WITH seq AS (
   SELECT next_sk AS start_sk FROM ctl.surrogate_key_seq WHERE dim_name = 'customer'
-),
-to_insert AS (
-  SELECT * FROM _customer_delta ORDER BY customer_id
 ),
 numbered AS (
   SELECT
@@ -175,18 +183,17 @@ numbered AS (
     DATE '9999-12-31' AS effective_to,
     TRUE AS is_current,
     record_hash
-  FROM to_insert
+  FROM _customer_delta
 )
 INSERT INTO dw.dim_customer
 SELECT * FROM numbered;
 
--- 2.4) Avanzar secuencia
 UPDATE ctl.surrogate_key_seq
 SET next_sk = next_sk + (SELECT count(*) FROM _customer_delta)
 WHERE dim_name = 'customer';
 
 -- -------------------------------------------------------------------------
--- 3) DIM PRODUCT (SCD2)
+-- 3) DIM_PRODUCT (SCD2)
 -- -------------------------------------------------------------------------
 
 CREATE OR REPLACE TEMP TABLE _product_delta AS
@@ -200,7 +207,7 @@ WHERE d.product_id IS NULL
 
 UPDATE dw.dim_product d
 SET
-  effective_to = (SELECT effective_date FROM _params) - INTERVAL 1 DAY,
+  effective_to = (SELECT effective_date FROM _params) - 1,
   is_current = FALSE
 WHERE d.is_current = TRUE
   AND EXISTS (
@@ -213,9 +220,6 @@ WHERE d.is_current = TRUE
 WITH seq AS (
   SELECT next_sk AS start_sk FROM ctl.surrogate_key_seq WHERE dim_name = 'product'
 ),
-to_insert AS (
-  SELECT * FROM _product_delta ORDER BY product_id
-),
 numbered AS (
   SELECT
     (SELECT start_sk FROM seq) + row_number() OVER (ORDER BY product_id) - 1 AS product_sk,
@@ -226,7 +230,7 @@ numbered AS (
     DATE '9999-12-31' AS effective_to,
     TRUE AS is_current,
     record_hash
-  FROM to_insert
+  FROM _product_delta
 )
 INSERT INTO dw.dim_product
 SELECT * FROM numbered;
@@ -236,12 +240,9 @@ SET next_sk = next_sk + (SELECT count(*) FROM _product_delta)
 WHERE dim_name = 'product';
 
 -- -------------------------------------------------------------------------
--- 4) DIM EMPLOYEE (SCD1 overwrite)
+-- 4) DIM_EMPLOYEE (SCD1 overwrite)
 -- -------------------------------------------------------------------------
--- Para SCD1: si existe employee_id, actualizamos atributos; si no existe, insert.
--- (En DuckDB usamos un patrón MERGE-like: UPDATE + INSERT NOT EXISTS)
 
--- 4.1) Update de los existentes cuyo hash cambió
 UPDATE dw.dim_employee d
 SET
   first_name = s.first_name,
@@ -258,7 +259,6 @@ WHERE d.employee_id = s.employee_id
   AND d.employee_sk <> 0
   AND d.record_hash <> s.record_hash;
 
--- 4.2) Insert de nuevos employees (si aparecieran)
 CREATE OR REPLACE TEMP TABLE _employee_new AS
 SELECT s.*
 FROM stg.employee_src s
@@ -280,8 +280,9 @@ SET next_sk = next_sk + (SELECT count(*) FROM _employee_new)
 WHERE dim_name='employee';
 
 -- -------------------------------------------------------------------------
--- 5) DIM SHIPPER (SCD1 overwrite)
+-- 5) DIM_SHIPPER (SCD1 overwrite)
 -- -------------------------------------------------------------------------
+
 UPDATE dw.dim_shipper d
 SET
   company_name = s.company_name,
@@ -313,13 +314,12 @@ SET next_sk = next_sk + (SELECT count(*) FROM _shipper_new)
 WHERE dim_name='shipper';
 
 -- -------------------------------------------------------------------------
--- 6) FACT incremental: nuevas órdenes por watermark (OrderID)
+-- 6) FACT incremental (orders > watermark)
 -- -------------------------------------------------------------------------
 
 CREATE OR REPLACE TEMP TABLE _wm AS
 SELECT last_order_id FROM ctl.watermark WHERE entity='orders';
 
--- Traer nuevas líneas (Orders + Order Details) para OrderID > watermark
 CREATE OR REPLACE TEMP TABLE _new_sales_lines AS
 SELECT
   o.OrderID AS order_id,
@@ -331,7 +331,6 @@ SELECT
   CAST(o.RequiredDate AS DATE) AS required_date,
   CAST(o.ShippedDate AS DATE) AS shipped_date,
   CAST(o.Freight AS DOUBLE) AS freight,
-
   CAST(od.Quantity AS BIGINT) AS quantity,
   CAST(od.UnitPrice AS DOUBLE) AS unit_price,
   CAST(od.Discount AS DOUBLE) AS discount
@@ -339,7 +338,7 @@ FROM oltp.Orders o
 JOIN oltp."Order Details" od ON od.OrderID = o.OrderID
 WHERE o.OrderID > (SELECT last_order_id FROM _wm);
 
--- Insert evitando duplicados (idempotente)
+-- Insert idempotente (si re-ejecutás incremental no duplica)
 INSERT INTO dw.fact_sales_line
 SELECT
   s.order_id,
@@ -366,19 +365,19 @@ SELECT
 
   CASE
     WHEN sum(s.quantity * s.unit_price * (1 - s.discount)) OVER (PARTITION BY s.order_id) = 0 THEN 0
-    ELSE s.freight * ( (s.quantity * s.unit_price * (1 - s.discount))
-      / sum(s.quantity * s.unit_price * (1 - s.discount)) OVER (PARTITION BY s.order_id) )
+    ELSE s.freight * (
+      (s.quantity * s.unit_price * (1 - s.discount))
+      / sum(s.quantity * s.unit_price * (1 - s.discount)) OVER (PARTITION BY s.order_id)
+    )
   END AS freight_allocated,
 
   current_timestamp AS etl_loaded_at
 FROM _new_sales_lines s
 LEFT JOIN dw.dim_customer dc
   ON dc.customer_id = s.customer_id
- AND dc.is_current = TRUE
  AND s.order_date BETWEEN dc.effective_from AND dc.effective_to
 LEFT JOIN dw.dim_product dp
   ON dp.product_id = s.product_id
- AND dp.is_current = TRUE
  AND s.order_date BETWEEN dp.effective_from AND dp.effective_to
 LEFT JOIN dw.dim_employee de
   ON de.employee_id = s.employee_id
@@ -396,7 +395,7 @@ WHERE NOT EXISTS (
 );
 
 -- -------------------------------------------------------------------------
--- 7) Actualizar watermark
+-- 7) Update watermark
 -- -------------------------------------------------------------------------
 UPDATE ctl.watermark
 SET
@@ -417,3 +416,5 @@ SELECT
   (SELECT count(*) FROM _product_delta) AS rows_dim_product,
   (SELECT count(*) FROM _new_sales_lines) AS rows_fact_sales,
   'Incremental load completed (SCD2 + new fact rows)' AS notes;
+
+COMMIT;
