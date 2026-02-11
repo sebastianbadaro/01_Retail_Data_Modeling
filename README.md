@@ -158,3 +158,4 @@ duckdb data/dw/northwind_dw.duckdb < sql/03_load_incremental.sql
 ## Notas
 - Este proyecto prioriza **claridad didáctica**: los scripts están comentados con “qué/por qué”.
 - Es intencional que el incremental re‑lea dimensiones completas (Northwind es chico). En producción usarías CDC / timestamps / streams.
+- Se utiliza DuckDB porque permite correr todo el flujo localmente con un solo archivo de base de datos, sin infraestructura adicional. Es ideal para un proyecto didáctico y reproducible: facilita compartir el repo, ejecutar los scripts en cualquier máquina y validar resultados de punta a punta. Además, DuckDB está optimizado para cargas analíticas (OLAP), trabaja muy bien con archivos (por ejemplo Parquet/CSV/Excel) y soporta patrones clave para este tipo de proyectos (como upserts con MERGE y transformaciones SQL).
