@@ -5,19 +5,6 @@ Este proyecto está pensado para **aprender modelado dimensional (Kimball) paso 
 La base de datos Northwind es una base de datos de ejemplo que fue creada originalmente por Microsoft y utilizada durante décadas como base para sus tutoriales en una variedad de productos de bases de datos. La base Northwind contiene datos de ventas de una empresa ficticia llamada “Northwind Traders”, que importa y exporta alimentos especializados de todo el mundo. Northwind es un excelente esquema tutorial para representar el ERP de una pequeña empresa, incluyendo clientes, pedidos, inventario, compras, proveedores, envíos, empleados y contabilidad de entrada única.
 
 
----
-
-## Supuestos y conocimientos previos 
-
-Este proyecto está pensado como una guía **paso a paso** para construir un modelo dimensional, pero asume que ya contás con una base mínima en:
-
-- **SQL**: `JOIN`, `GROUP BY`, `CTE`, funciones de ventana (`ROW_NUMBER`, `SUM() OVER`), tipos y casts.
-- **Modelado relacional (OLTP)**: claves primarias/foráneas, normalización básica, relaciones 1–N y N–N.
-- **Conceptos de BI / OLAP**: métricas vs atributos, agregaciones, filtros, y por qué un esquema analítico difiere del transaccional.
-- **Conceptos de Data Warehousing**: dimensiones, hechos, grano, surrogate keys y nociones de SCD (al menos a nivel conceptual).
-- **Ejecución local**: poder correr scripts SQL con DuckDB (CLI o extensión) y entender rutas/archivos del repo.
-
-
 Incluye:
 - Diseño dimensional (dims + fact) con **justificación de cada decisión**
 - **Carga histórica (full load)**
@@ -116,6 +103,18 @@ Si alguno de estos conceptos no te suena, igual podés seguir el proyecto, pero 
 - `data/oltp/northwind_oltp.duckdb` → Base OLTP (operacional) de Northwind
 - `data/dw/northwind_dw.duckdb` → Se crea al ejecutar los scripts
 - `sql/` → Scripts SQL (ejecutar en orden)
+
+---
+
+## Supuestos y conocimientos previos 
+
+Este proyecto está pensado como una guía **paso a paso** para construir un modelo dimensional, pero asume que ya contás con una base mínima en:
+
+- **SQL**: `JOIN`, `GROUP BY`, `CTE`, funciones de ventana (`ROW_NUMBER`, `SUM() OVER`), tipos y casts.
+- **Modelado relacional (OLTP)**: claves primarias/foráneas, normalización básica, relaciones 1–N y N–N.
+- **Conceptos de BI / OLAP**: métricas vs atributos, agregaciones, filtros, y por qué un esquema analítico difiere del transaccional.
+- **Conceptos de Data Warehousing**: dimensiones, hechos, grano, surrogate keys y nociones de SCD (al menos a nivel conceptual).
+- **Ejecución local**: poder correr scripts SQL con DuckDB (CLI o extensión) y entender rutas/archivos del repo.
 
 ---
 
