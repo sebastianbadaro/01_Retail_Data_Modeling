@@ -2,6 +2,8 @@
 
 Este proyecto está pensado para **aprender modelado dimensional (Kimball) paso a paso** con un caso clásico de OLTP multi‑tabla: **Northwind**.
 
+La base de datos Northwind es una base de datos de ejemplo que fue creada originalmente por Microsoft y utilizada durante décadas como base para sus tutoriales en una variedad de productos de bases de datos. La base Northwind contiene datos de ventas de una empresa ficticia llamada “Northwind Traders”, que importa y exporta alimentos especializados de todo el mundo. Northwind es un excelente esquema tutorial para representar el ERP de una pequeña empresa, incluyendo clientes, pedidos, inventario, compras, proveedores, envíos, empleados y contabilidad de entrada única.
+
 Incluye:
 - Diseño dimensional (dims + fact) con **justificación de cada decisión**
 - **Carga histórica (full load)**
