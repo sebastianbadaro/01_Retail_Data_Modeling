@@ -204,6 +204,19 @@ El enfoque separa:
 
 ---
 
+## Supuestos y conocimientos previos (antes de arrancar)
+
+Este proyecto está pensado como una guía **paso a paso** para construir un modelo dimensional, pero asume que ya contás con una base mínima en:
+
+- **SQL**: `JOIN`, `GROUP BY`, `CTE`, funciones de ventana (`ROW_NUMBER`, `SUM() OVER`), tipos y casts.
+- **Modelado relacional (OLTP)**: claves primarias/foráneas, normalización básica, relaciones 1–N y N–N.
+- **Conceptos de BI / OLAP**: métricas vs atributos, agregaciones, filtros, y por qué un esquema analítico difiere del transaccional.
+- **Conceptos de Data Warehousing**: dimensiones, hechos, grano, surrogate keys y nociones de SCD (al menos a nivel conceptual).
+- **Ejecución local**: poder correr scripts SQL con DuckDB (CLI o extensión) y entender rutas/archivos del repo.
+
+Si alguno de estos conceptos no te suena, igual podés seguir el proyecto, pero te recomiendo repasar primero esos puntos para aprovecharlo al máximo.
+
+---
 ## Notas
 - Este proyecto prioriza **claridad didáctica**: los scripts están comentados con “qué/por qué”.
 - Es intencional que el incremental re‑lea dimensiones completas (Northwind es chico). En producción usarías CDC / timestamps / streams.
