@@ -27,7 +27,6 @@ Si alguno de estos conceptos no te suena, igual podés seguir el proyecto, pero 
 
 ---
 
-### Tablas principales (Data Dictionary “rápido”)
 
 ## Modelo OLTP (Northwind) — DER
 
